@@ -8,51 +8,42 @@ import {
   addDoc,
   getDoc,
   increment,
-  deleteDoc,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
 /* ======================
-   الأسئلة (5)
+   Types
 ====================== */
-const QUESTIONS = [
-  {
-    q: 'من هو أول الخلفاء الراشدين؟',
-    options: ['عمر', 'علي', 'أبو بكر', 'عثمان'],
-    correct: 2,
-  },
-  {
-    q: 'كم عدد أركان الإسلام؟',
-    options: ['3', '4', '5', '6'],
-    correct: 2,
-  },
-  {
-    q: 'في أي شهر يصوم المسلمين؟',
-    options: ['شعبان', 'رمضان', 'محرم', 'ذو الحجة'],
-    correct: 1,
-  },
-  {
-    q: 'أين نزل الوحي؟',
-    options: ['غار حراء', 'المدينة', 'الطائف', 'بدر'],
-    correct: 0,
-  },
-  {
-    q: 'كم عدد الصلوات المفروضة؟',
-    options: ['3', '4', '5', '6'],
-    correct: 2,
-  },
-];
-
 type Status = 'IDLE' | 'LOBBY' | 'QUESTION' | 'FINAL';
 
+interface Question {
+  q: string;
+  options: string[];
+  correct: number;
+}
+
+interface Player {
+  id: string;
+  name: string;
+  score: number;
+  answered: boolean;
+  isCorrect: boolean | null;
+}
+
+/* ======================
+   App
+====================== */
 export default function App() {
   const [name, setName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [role, setRole] = useState<'HOST' | 'PLAYER' | null>(null);
+
   const [status, setStatus] = useState<Status>('IDLE');
-  const [players, setPlayers] = useState<any[]>([]);
-  const [timer, setTimer] = useState(15);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [questions, setQuestions] = useState<Question[]>([]);
   const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [timer, setTimer] = useState(15);
+
   const [playerId, setPlayerId] = useState('');
   const [answeredLocal, setAnsweredLocal] = useState(false);
 
@@ -62,11 +53,14 @@ export default function App() {
   useEffect(() => {
     if (!roomCode) return;
 
-    const unsubRoom = onSnapshot(doc(db, 'rooms', roomCode), (snap) => {
+    const roomRef = doc(db, 'rooms', roomCode);
+
+    const unsubRoom = onSnapshot(roomRef, (snap) => {
       if (!snap.exists()) return;
       const d = snap.data();
 
       if (d.status === 'IDLE') {
+        // رجوع الجميع للرئيسية
         setRole(null);
         setRoomCode('');
         setPlayerId('');
@@ -75,15 +69,21 @@ export default function App() {
       }
 
       setStatus(d.status);
-      setTimer(d.timer);
       setCurrentQuestion(d.currentQuestion);
+      setTimer(d.timer);
+      setQuestions(d.questions || []);
       setAnsweredLocal(false);
     });
 
     const unsubPlayers = onSnapshot(
       collection(db, 'rooms', roomCode, 'players'),
       (snap) => {
-        setPlayers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setPlayers(
+          snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<Player, 'id'>),
+          }))
+        );
       }
     );
 
@@ -94,7 +94,7 @@ export default function App() {
   }, [roomCode]);
 
   /* ======================
-     Timer (HOST فقط)
+     Timer (HOST only)
   ======================= */
   useEffect(() => {
     if (role !== 'HOST' || status !== 'QUESTION') return;
@@ -114,9 +114,20 @@ export default function App() {
   }, [timer, status, role]);
 
   /* ======================
+     Gemini Questions
+  ======================= */
+  const fetchQuestionsFromGemini = async () => {
+    const res = await fetch('/.netlify/functions/gemini', {
+      method: 'POST',
+      body: JSON.stringify({ category: 'ثقافة عامة' }),
+    });
+
+    return (await res.json()) as Question[];
+  };
+
+  /* ======================
      Actions
   ======================= */
-
   const createRoom = async () => {
     if (!name.trim()) return alert('أدخل اسمك');
 
@@ -126,6 +137,7 @@ export default function App() {
       status: 'LOBBY',
       currentQuestion: 0,
       timer: 15,
+      questions: [],
     });
 
     const p = await addDoc(collection(db, 'rooms', code, 'players'), {
@@ -149,7 +161,7 @@ export default function App() {
     if (!roomSnap.exists()) return alert('الغرفة غير موجودة');
 
     if (roomSnap.data().status !== 'LOBBY')
-      return alert('❌ اللعبة بدأت');
+      return alert('اللعبة بدأت بالفعل');
 
     const p = await addDoc(collection(db, 'rooms', roomCode, 'players'), {
       name,
@@ -164,22 +176,25 @@ export default function App() {
   };
 
   const startGame = async () => {
+    const qs = await fetchQuestionsFromGemini();
+
     await updateDoc(doc(db, 'rooms', roomCode), {
       status: 'QUESTION',
       currentQuestion: 0,
       timer: 15,
+      questions: qs,
     });
   };
 
   const nextQuestion = async () => {
     for (const p of players) {
-      await updateDoc(doc(db, 'rooms', roomCode, 'players', p.id), {
-        answered: false,
-        isCorrect: null,
-      });
+      await updateDoc(
+        doc(db, 'rooms', roomCode, 'players', p.id),
+        { answered: false, isCorrect: null }
+      );
     }
 
-    if (currentQuestion >= QUESTIONS.length - 1) {
+    if (currentQuestion >= questions.length - 1) {
       await updateDoc(doc(db, 'rooms', roomCode), { status: 'FINAL' });
     } else {
       await updateDoc(doc(db, 'rooms', roomCode), {
@@ -187,24 +202,6 @@ export default function App() {
         timer: 15,
       });
     }
-  };
-
-  const leaveGame = async () => {
-    if (playerId) {
-      await deleteDoc(doc(db, 'rooms', roomCode, 'players', playerId));
-    }
-    setRole(null);
-    setRoomCode('');
-    setPlayerId('');
-    setStatus('IDLE');
-  };
-
-  const resetToHome = async () => {
-    await updateDoc(doc(db, 'rooms', roomCode), {
-      status: 'IDLE',
-      currentQuestion: 0,
-      timer: 15,
-    });
   };
 
   const submitAnswer = async (index: number) => {
@@ -215,24 +212,35 @@ export default function App() {
 
     setAnsweredLocal(true);
 
-    const correct = index === QUESTIONS[currentQuestion].correct;
+    const correct = index === questions[currentQuestion].correct;
     const score = correct ? 100 + timer * 10 : 0;
 
-    await updateDoc(doc(db, 'rooms', roomCode, 'players', playerId), {
-      answered: true,
-      isCorrect: correct,
-      score: increment(score),
+    await updateDoc(
+      doc(db, 'rooms', roomCode, 'players', playerId),
+      {
+        answered: true,
+        isCorrect: correct,
+        score: increment(score),
+      }
+    );
+  };
+
+  const resetGame = async () => {
+    await updateDoc(doc(db, 'rooms', roomCode), {
+      status: 'IDLE',
+      currentQuestion: 0,
+      timer: 15,
+      questions: [],
     });
   };
 
   /* ======================
      UI
   ======================= */
-
   if (!role) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
-        <div className="bg-white/10 p-8 rounded-2xl w-80">
+        <div className="bg-white/10 p-8 rounded-xl w-80">
           <input
             className="w-full p-3 mb-3 text-black rounded"
             placeholder="اسمك"
@@ -290,7 +298,7 @@ export default function App() {
   }
 
   if (status === 'QUESTION') {
-    const q = QUESTIONS[currentQuestion];
+    const q = questions[currentQuestion];
     return (
       <div className="min-h-screen bg-indigo-700 p-6 text-white">
         <h2 className="text-center mb-4 text-2xl">⏱️ {timer}</h2>
@@ -310,6 +318,7 @@ export default function App() {
         </div>
 
         <div className="bg-white/10 p-4 rounded-xl">
+          <h3 className="text-center mb-2 font-bold">إجابات اللاعبين</h3>
           {players.map((p) => (
             <div key={p.id}>
               {p.name} — {!p.answered ? '⏳' : p.isCorrect ? '✅ صح' : '❌ خطأ'}
@@ -334,19 +343,12 @@ export default function App() {
 
         {role === 'HOST' && (
           <button
-            onClick={resetToHome}
-            className="mt-6 bg-white text-emerald-700 px-10 py-4 rounded-xl font-black"
+            onClick={resetGame}
+            className="mt-8 bg-white text-emerald-700 px-10 py-4 rounded-xl font-black text-xl"
           >
-            🔄 لعبة جديدة
+            🔄 بدء لعبة جديدة
           </button>
         )}
-
-        <button
-          onClick={leaveGame}
-          className="mt-4 bg-red-500 px-8 py-3 rounded-xl font-bold"
-        >
-          🚪 خروج
-        </button>
       </div>
     );
   }
