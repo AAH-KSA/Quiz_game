@@ -59,18 +59,19 @@ export default function App() {
       if (!snap.exists()) return;
       const d = snap.data();
 
+      // رجوع الجميع للرئيسية
       if (d.status === 'IDLE') {
-        // رجوع الجميع للرئيسية
         setRole(null);
         setRoomCode('');
         setPlayerId('');
         setStatus('IDLE');
+        setQuestions([]);
         return;
       }
 
       setStatus(d.status);
-      setCurrentQuestion(d.currentQuestion);
-      setTimer(d.timer);
+      setCurrentQuestion(d.currentQuestion ?? 0);
+      setTimer(d.timer ?? 15);
       setQuestions(d.questions || []);
       setAnsweredLocal(false);
     });
@@ -114,15 +115,29 @@ export default function App() {
   }, [timer, status, role]);
 
   /* ======================
-     Gemini Questions
+     Gemini Questions (FIX)
   ======================= */
-  const fetchQuestionsFromGemini = async () => {
+  const fetchQuestionsFromGemini = async (): Promise<Question[]> => {
     const res = await fetch('/.netlify/functions/gemini', {
       method: 'POST',
       body: JSON.stringify({ category: 'ثقافة عامة' }),
     });
 
-    return (await res.json()) as Question[];
+    const text = await res.text();
+
+    // تنظيف رد Gemini
+    const clean = text
+      .replace(/```json/g, '')
+      .replace(/```/g, '')
+      .trim();
+
+    const parsed = JSON.parse(clean);
+
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('Invalid questions from Gemini');
+    }
+
+    return parsed;
   };
 
   /* ======================
@@ -176,14 +191,19 @@ export default function App() {
   };
 
   const startGame = async () => {
-    const qs = await fetchQuestionsFromGemini();
+    try {
+      const qs = await fetchQuestionsFromGemini();
 
-    await updateDoc(doc(db, 'rooms', roomCode), {
-      status: 'QUESTION',
-      currentQuestion: 0,
-      timer: 15,
-      questions: qs,
-    });
+      await updateDoc(doc(db, 'rooms', roomCode), {
+        status: 'QUESTION',
+        currentQuestion: 0,
+        timer: 15,
+        questions: qs,
+      });
+    } catch (e) {
+      alert('فشل تحميل الأسئلة، حاول مرة أخرى');
+      console.error(e);
+    }
   };
 
   const nextQuestion = async () => {
@@ -298,7 +318,17 @@ export default function App() {
   }
 
   if (status === 'QUESTION') {
+    if (!questions.length) {
+      return (
+        <div className="min-h-screen bg-indigo-700 flex items-center justify-center text-white">
+          جاري تحميل الأسئلة...
+        </div>
+      );
+    }
+
     const q = questions[currentQuestion];
+    if (!q) return null;
+
     return (
       <div className="min-h-screen bg-indigo-700 p-6 text-white">
         <h2 className="text-center mb-4 text-2xl">⏱️ {timer}</h2>
