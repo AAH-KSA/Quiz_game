@@ -8,6 +8,7 @@ import {
   addDoc,
   getDoc,
   increment,
+  deleteDoc,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -65,7 +66,6 @@ export default function App() {
       if (!snap.exists()) return;
       const d = snap.data();
 
-      // ⬅️ الرجوع للجميع للصفحة الرئيسية
       if (d.status === 'IDLE') {
         setRole(null);
         setRoomCode('');
@@ -118,10 +118,7 @@ export default function App() {
   ======================= */
 
   const createRoom = async () => {
-    if (!name.trim()) {
-      alert('أدخل اسمك');
-      return;
-    }
+    if (!name.trim()) return alert('أدخل اسمك');
 
     const code = Math.floor(1000 + Math.random() * 9000).toString();
 
@@ -145,21 +142,14 @@ export default function App() {
   };
 
   const joinRoom = async () => {
-    if (!name.trim() || !roomCode.trim()) {
-      alert('أدخل الاسم ورقم الغرفة');
-      return;
-    }
+    if (!name.trim() || !roomCode.trim())
+      return alert('أدخل الاسم ورقم الغرفة');
 
     const roomSnap = await getDoc(doc(db, 'rooms', roomCode));
-    if (!roomSnap.exists()) {
-      alert('الغرفة غير موجودة');
-      return;
-    }
+    if (!roomSnap.exists()) return alert('الغرفة غير موجودة');
 
-    if (roomSnap.data().status !== 'LOBBY') {
-      alert('❌ لا يمكن الانضمام، اللعبة بدأت بالفعل');
-      return;
-    }
+    if (roomSnap.data().status !== 'LOBBY')
+      return alert('❌ اللعبة بدأت');
 
     const p = await addDoc(collection(db, 'rooms', roomCode, 'players'), {
       name,
@@ -199,7 +189,16 @@ export default function App() {
     }
   };
 
-  // 🔄 إعادة الجميع للصفحة الرئيسية
+  const leaveGame = async () => {
+    if (playerId) {
+      await deleteDoc(doc(db, 'rooms', roomCode, 'players', playerId));
+    }
+    setRole(null);
+    setRoomCode('');
+    setPlayerId('');
+    setStatus('IDLE');
+  };
+
   const resetToHome = async () => {
     await updateDoc(doc(db, 'rooms', roomCode), {
       status: 'IDLE',
@@ -270,6 +269,12 @@ export default function App() {
           رمز الغرفة: <b className="text-yellow-400">{roomCode}</b>
         </h2>
 
+        <div className="mb-6">
+          {players.map((p) => (
+            <div key={p.id}>👤 {p.name}</div>
+          ))}
+        </div>
+
         {role === 'HOST' ? (
           <button
             onClick={startGame}
@@ -278,7 +283,7 @@ export default function App() {
             بدء اللعبة
           </button>
         ) : (
-          <p className="animate-pulse">⏳ بانتظار المضيف لبدء اللعبة...</p>
+          <p className="animate-pulse">⏳ بانتظار المضيف...</p>
         )}
       </div>
     );
@@ -305,11 +310,9 @@ export default function App() {
         </div>
 
         <div className="bg-white/10 p-4 rounded-xl">
-          <h3 className="text-center mb-2 font-bold">إجابات اللاعبين</h3>
           {players.map((p) => (
             <div key={p.id}>
-              {p.name} —
-              {!p.answered ? ' ⏳' : p.isCorrect ? ' ✅ صح' : ' ❌ خطأ'}
+              {p.name} — {!p.answered ? '⏳' : p.isCorrect ? '✅ صح' : '❌ خطأ'}
             </div>
           ))}
         </div>
@@ -332,11 +335,18 @@ export default function App() {
         {role === 'HOST' && (
           <button
             onClick={resetToHome}
-            className="mt-8 bg-white text-emerald-700 px-10 py-4 rounded-xl font-black text-xl"
+            className="mt-6 bg-white text-emerald-700 px-10 py-4 rounded-xl font-black"
           >
-            🔄 بدء لعبة جديدة
+            🔄 لعبة جديدة
           </button>
         )}
+
+        <button
+          onClick={leaveGame}
+          className="mt-4 bg-red-500 px-8 py-3 rounded-xl font-bold"
+        >
+          🚪 خروج
+        </button>
       </div>
     );
   }
